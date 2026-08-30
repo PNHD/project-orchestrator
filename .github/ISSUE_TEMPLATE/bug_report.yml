@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible Project Orchestrator problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include tokens, private paths, task content, or security vulnerabilities. Use private vulnerability reporting for security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Project Orchestrator version
+      placeholder: 0.3.0
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include sanitized reproduction steps, expected behavior, and actual behavior.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows version, Codex CLI version
+    validations:
+      required: true
