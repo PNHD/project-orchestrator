@@ -55,8 +55,8 @@ PERMISSION_PATTERNS = {
     "git_create_fork_branch": [r"\bgit\s+(?:checkout\s+-b|switch\s+-c|branch\s+)"],
     "github_write_review": [r"/pulls/[^\s\"']+/reviews\b", r"\bgh\s+pr\s+review\b"],
     "github_write_comment": [r"/issues/[^\s\"']+/comments\b", r"\bgh\s+(?:pr|issue)\s+comment\b"],
-    "github_write_pr_metadata": [r"\bgh\s+pr\s+edit\b"],
-    "github_create_pr": [r"\bgh\s+pr\s+create\b", r"/pulls(?:\?|[\"'])"],
+    "github_write_pr_metadata": [r"\bgh\s+pr\s+edit\b", r"--method\s+PATCH[^\n\r]*/pulls/"],
+    "github_create_pr": [r"\bgh\s+pr\s+create\b", r"--method\s+POST[^\n\r]*/pulls\b"],
 }
 
 SECRET_PATTERNS = [
