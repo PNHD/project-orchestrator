@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-pipreqs-552-98f14a8-v1",
+  "kind": "github_review",
+  "target": {
+    "repo": "bndr/pipreqs",
+    "pr_number": 552,
+    "expected_head_sha": "98f14a884be87527f0f5cd9b6b3d90b1d5978fb7"
+  },
+  "review": {
+    "event": "REQUEST_CHANGES",
+    "body": "Re-reviewed current head `98f14a884be87527f0f5cd9b6b3d90b1d5978fb7`. SECURITY-N/A.\n\nThe code-side concerns from my previous review are resolved: matching is now normalized inside `get_import_local()`, output casing is preserved, the unrelated mapping/debug artifacts are gone, and the new regression covers case mismatches through both `package[\"name\"]` and `package[\"exports\"]`.\n\nOne evidence/scope blocker remains before I can approve this head: the PR still says `Closes #243`, but the current regression only demonstrates the capitalization failure from #312. #243 reports a concrete `--use-local` run that finds `pyserial`, `PySimpleGUI`, and `PyYAML` and then writes zero requirements; this patch does not reproduce that scenario, so there is still no evidence that case-insensitive matching is sufficient to close it.\n\nPlease either add a focused regression that reproduces #243 on `master` and passes with this change, or remove `Closes #243` and keep the PR scoped to the demonstrated #312 fix. The current Actions runs are `action_required` with no jobs, so they also do not yet provide test evidence for this head."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "GitHub connector review write returned 403 Resource not accessible by integration on the exact current head."
+  }
+}
