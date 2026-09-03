@@ -92,8 +92,9 @@ def parse_job(body: str) -> dict[str, Any]:
     if not isinstance(payload, dict) or payload.get("repo") != CONTROL_REPO:
         raise ValueError("payload must be in control repo")
     path = payload.get("path")
-    if not isinstance(path, str) or not re.fullmatch(r"oss-runner/jobs/[A-Za-z0-9._/-]+\.py", path):
-        raise ValueError("payload path outside oss-runner/jobs")
+    expected_path = f"oss-runner/jobs/{job_id}.py"
+    if path != expected_path:
+        raise ValueError(f"payload path must be exactly {expected_path}")
     ref = payload.get("ref")
     digest = payload.get("sha256")
     if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{40}", ref):
