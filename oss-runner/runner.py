@@ -6,16 +6,22 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from policy import (
-    CLAIM_MARKER, CONTROL_OWNER, CONTROL_OWNER_ID, CONTROL_REPO, RESULT_MARKER,
-    TITLE_PREFIX, parse_job, public_summary, sanitize, verify_payload,
+    CLAIM_MARKER,
+    CONTROL_OWNER,
+    CONTROL_OWNER_ID,
+    CONTROL_REPO,
+    RESULT_MARKER,
+    TITLE_PREFIX,
+    parse_manifest,
+    parse_pointer,
+    sanitize,
 )
 
 
@@ -27,12 +33,12 @@ def root() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "PNHD/oss-runner"
 
 
-def log(msg: str) -> None:
+def log(message: str) -> None:
     root().mkdir(parents=True, exist_ok=True)
-    line = f"[{now()}] {msg}"
+    line = f"[{now()}] {message}"
     print(line, flush=True)
-    with (root() / "runner.log").open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    with (root() / "runner.log").open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
 
 
 def find_gh() -> str:
@@ -42,19 +48,28 @@ def find_gh() -> str:
     candidate = Path.home() / "AppData/Local/Microsoft/WinGet/Packages/GitHub.cli_Microsoft.Winget.Source_8wekyb3d8bbwe/bin/gh.exe"
     if candidate.exists():
         return str(candidate)
-    raise RuntimeError("gh not found")
+    raise RuntimeError("GitHub CLI (gh) was not found")
 
 
 def run(cmd: list[str], *, stdin: str | None = None, timeout: int = 60) -> str:
-    p = subprocess.run(cmd, input=stdin, text=True, encoding="utf-8", errors="replace",
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
-    if p.returncode:
-        raise RuntimeError(f"command failed ({p.returncode}): {' '.join(cmd)}\n{p.stdout}")
-    return p.stdout
+    proc = subprocess.run(
+        cmd,
+        input=stdin,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+    )
+    if proc.returncode:
+        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stdout}")
+    return proc.stdout
 
 
-def gh(gh_exe: str, endpoint: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
-    cmd = [gh_exe, "api"]
+def gh_json(gh: str, endpoint: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
+    cmd = [gh, "api"]
     if method != "GET":
         cmd += ["--method", method]
     cmd.append(endpoint)
@@ -66,86 +81,182 @@ def gh(gh_exe: str, endpoint: str, *, method: str = "GET", body: dict[str, Any] 
     return json.loads(out) if out.strip() else None
 
 
-def verify_identity(gh_exe: str) -> None:
-    user = gh(gh_exe, "user")
+def verify_identity(gh: str) -> None:
+    user = gh_json(gh, "user")
     if not isinstance(user, dict) or user.get("login") != CONTROL_OWNER or user.get("id") != CONTROL_OWNER_ID:
-        raise RuntimeError("gh identity is not PNHD/26757735")
+        raise RuntimeError("gh must be authenticated as PNHD/26757735")
+
+
+def verify_public_repo(gh: str, repo: str) -> dict[str, Any]:
+    data = gh_json(gh, f"repos/{repo}")
+    if not isinstance(data, dict) or data.get("private") is not False or data.get("archived") is True:
+        raise RuntimeError(f"target repository must be public and active: {repo}")
+    return data
+
+
+def verify_pr(gh: str, target: dict[str, Any]) -> dict[str, Any]:
+    repo = target["repo"]
+    verify_public_repo(gh, repo)
+    pr = gh_json(gh, f"repos/{repo}/pulls/{target['pr_number']}")
+    if not isinstance(pr, dict) or pr.get("state") != "open" or pr.get("merged") is True:
+        raise RuntimeError("target PR is no longer open/unmerged")
+    head = (pr.get("head") or {}).get("sha")
+    if head != target["expected_head_sha"]:
+        raise RuntimeError(f"target PR head changed: expected {target['expected_head_sha']}, got {head}")
+    return pr
+
+
+def fetch_manifest(gh: str, pointer: dict[str, Any]) -> bytes:
+    manifest = pointer["manifest"]
+    path = quote(manifest["path"], safe="/")
+    ref = quote(manifest["ref"], safe="")
+    data = gh_json(gh, f"repos/{CONTROL_REPO}/contents/{path}?ref={ref}")
+    if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
+        raise RuntimeError("manifest fetch did not return a base64 file")
+    return base64.b64decode(data.get("content", ""), validate=False)
+
+
+def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
+    kind = manifest["kind"]
+    if kind == "smoke":
+        return "identity and declarative control-plane smoke passed"
+
+    if kind == "github_review":
+        pr = verify_pr(gh, manifest["target"])
+        if (pr.get("user") or {}).get("login") == CONTROL_OWNER:
+            raise RuntimeError("runner refuses to review PNHD's own PR")
+        review = manifest["review"]
+        body: dict[str, Any] = {"event": review["event"]}
+        if review.get("body"):
+            body["body"] = review["body"]
+        result = gh_json(
+            gh,
+            f"repos/{manifest['target']['repo']}/pulls/{manifest['target']['pr_number']}/reviews",
+            method="POST",
+            body=body,
+        )
+        if not isinstance(result, dict) or result.get("state") != review["event"]:
+            raise RuntimeError("GitHub did not persist the requested review state")
+        return f"review {review['event']} persisted on exact PR head {manifest['target']['expected_head_sha'][:12]}"
+
+    if kind == "github_comment":
+        target = manifest["target"]
+        verify_public_repo(gh, target["repo"])
+        issue = gh_json(gh, f"repos/{target['repo']}/issues/{target['issue_number']}")
+        if not isinstance(issue, dict) or issue.get("state") != "open":
+            raise RuntimeError("comment target is not open")
+        expected = target.get("expected_pr_head_sha")
+        if expected is not None:
+            pr = gh_json(gh, f"repos/{target['repo']}/pulls/{target['issue_number']}")
+            if not isinstance(pr, dict) or (pr.get("head") or {}).get("sha") != expected:
+                raise RuntimeError("comment target PR head changed")
+        result = gh_json(
+            gh,
+            f"repos/{target['repo']}/issues/{target['issue_number']}/comments",
+            method="POST",
+            body={"body": manifest["comment"]["body"]},
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("id"), int):
+            raise RuntimeError("GitHub did not return a persisted comment")
+        return f"comment persisted as id {result['id']}"
+
+    if kind == "github_pr_update":
+        target = manifest["target"]
+        verify_pr(gh, target)
+        update = manifest["update"]
+        result = gh_json(
+            gh,
+            f"repos/{target['repo']}/pulls/{target['pr_number']}",
+            method="PATCH",
+            body=update,
+        )
+        if not isinstance(result, dict) or (result.get("head") or {}).get("sha") != target["expected_head_sha"]:
+            raise RuntimeError("PR metadata update verification failed")
+        for key, value in update.items():
+            if result.get(key) != value:
+                raise RuntimeError(f"PR metadata field did not persist: {key}")
+        return f"PR metadata updated on exact head {target['expected_head_sha'][:12]}"
+
+    if kind == "github_pr_create":
+        target = manifest["target"]
+        pr_data = manifest["pull_request"]
+        verify_public_repo(gh, target["repo"])
+        head_repo = verify_public_repo(gh, pr_data["head_repo"])
+        if (head_repo.get("owner") or {}).get("login") != CONTROL_OWNER or (head_repo.get("owner") or {}).get("id") != CONTROL_OWNER_ID:
+            raise RuntimeError("head repository is not owned by PNHD")
+        ref = gh_json(gh, f"repos/{pr_data['head_repo']}/git/ref/heads/{quote(pr_data['head_branch'], safe='/')}")
+        actual_head = ((ref or {}).get("object") or {}).get("sha") if isinstance(ref, dict) else None
+        if actual_head != pr_data["expected_head_sha"]:
+            raise RuntimeError(f"head branch changed: expected {pr_data['expected_head_sha']}, got {actual_head}")
+        head_owner = pr_data["head_repo"].split("/", 1)[0]
+        query = urlencode({"state": "open", "head": f"{head_owner}:{pr_data['head_branch']}", "base": target["base"], "per_page": 100})
+        existing = gh_json(gh, f"repos/{target['repo']}/pulls?{query}")
+        if isinstance(existing, list) and existing:
+            raise RuntimeError(f"matching open PR already exists: #{existing[0].get('number')}")
+        body = {
+            "title": pr_data["title"],
+            "head": f"{head_owner}:{pr_data['head_branch']}",
+            "base": target["base"],
+            "body": pr_data.get("body", ""),
+            "maintainer_can_modify": pr_data.get("maintainer_can_modify", True),
+        }
+        result = gh_json(gh, f"repos/{target['repo']}/pulls", method="POST", body=body)
+        if not isinstance(result, dict) or (result.get("head") or {}).get("sha") != pr_data["expected_head_sha"]:
+            raise RuntimeError("created PR did not bind to expected head")
+        return f"PR #{result.get('number')} created on exact head {pr_data['expected_head_sha'][:12]}"
+
+    raise RuntimeError(f"unreachable manifest kind: {kind}")
 
 
 def acquire_lock() -> Path | None:
-    p = root() / "runner.lock"
+    path = root() / "runner.lock"
     root().mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, f"pid={os.getpid()} {now()}\n".encode())
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"pid={os.getpid()} started={now()}\n".encode("utf-8"))
         os.close(fd)
-        return p
+        return path
     except FileExistsError:
-        if time.time() - p.stat().st_mtime > 7800:
-            p.unlink(missing_ok=True)
+        if time.time() - path.stat().st_mtime > 600:
+            path.unlink(missing_ok=True)
             return acquire_lock()
         return None
 
 
-def comments(gh_exe: str, number: int) -> list[dict[str, Any]]:
-    data = gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}/comments?per_page=100")
+def issue_comments(gh: str, number: int) -> list[dict[str, Any]]:
+    data = gh_json(gh, f"repos/{CONTROL_REPO}/issues/{number}/comments?per_page=100")
     return data if isinstance(data, list) else []
 
 
-def close_with(gh_exe: str, number: int, body: str) -> None:
-    gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}/comments", method="POST", body={"body": body})
-    gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}", method="PATCH", body={"state": "closed"})
+def trusted_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        c for c in comments
+        if (c.get("user") or {}).get("login") == CONTROL_OWNER
+        and (c.get("user") or {}).get("id") == CONTROL_OWNER_ID
+    ]
 
 
-def fetch_payload(gh_exe: str, job: dict[str, Any]) -> bytes:
-    p = job["payload"]
-    path = quote(p["path"], safe="/")
-    ref = quote(p["ref"], safe="")
-    data = gh(gh_exe, f"repos/{CONTROL_REPO}/contents/{path}?ref={ref}")
-    if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
-        raise RuntimeError("payload fetch did not return a base64 file")
-    return base64.b64decode(data.get("content", ""), validate=False)
+def close_control_issue(gh: str, number: int, status: str, job_id: str, detail: str) -> None:
+    detail = sanitize(detail)
+    body = (
+        f"{RESULT_MARKER}\n### PNHD OSS Runner v2: {status}\n\n"
+        f"- job: `{job_id}`\n"
+        f"- detail: {detail}\n"
+        f"- completed: `{now()}`\n"
+    )
+    gh_json(gh, f"repos/{CONTROL_REPO}/issues/{number}/comments", method="POST", body={"body": body})
+    gh_json(gh, f"repos/{CONTROL_REPO}/issues/{number}", method="PATCH", body={"state": "closed"})
 
 
-def execute(raw: bytes, job: dict[str, Any], number: int) -> tuple[int, str, float]:
-    verify_payload(raw, job)
-    work = root() / "work" / str(number)
-    work.mkdir(parents=True, exist_ok=True)
-    payload = work / f"{job['job_id']}.py"
-    payload.write_bytes(raw)
-    env = os.environ.copy()
-    env.update({
-        "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PNHD_OSS_RUNNER": "1",
-        "PNHD_OSS_JOB_ID": job["job_id"], "PNHD_OSS_ISSUE": str(number),
-        "PNHD_OSS_PERMISSIONS": ",".join(job.get("permissions", [])),
-    })
-    started = time.time()
-    p = subprocess.Popen([sys.executable, str(payload)], cwd=work, env=env, text=True,
-                         encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT,
-                         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-    try:
-        out, _ = p.communicate(timeout=job.get("timeout_seconds", 900))
-        return p.returncode, out or "", time.time() - started
-    except subprocess.TimeoutExpired:
-        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
-        try:
-            out, _ = p.communicate(timeout=15)
-        except subprocess.TimeoutExpired:
-            p.kill(); out, _ = p.communicate()
-        return 124, (out or "") + "\n[RUNNER] timeout; process tree terminated", time.time() - started
-
-
-def next_issue(gh_exe: str) -> dict[str, Any] | None:
-    data = gh(gh_exe, f"repos/{CONTROL_REPO}/issues?state=open&per_page=100")
+def next_issue(gh: str) -> dict[str, Any] | None:
+    data = gh_json(gh, f"repos/{CONTROL_REPO}/issues?state=open&per_page=100")
     if not isinstance(data, list):
         return None
-    for issue in sorted(data, key=lambda x: int(x.get("number", 0))):
-        u = issue.get("user") or {}
-        if "pull_request" in issue or u.get("login") != CONTROL_OWNER or u.get("id") != CONTROL_OWNER_ID:
+    for issue in sorted(data, key=lambda item: int(item.get("number", 0))):
+        user = issue.get("user") or {}
+        if "pull_request" in issue:
             continue
-        if issue.get("author_association") not in (None, "OWNER"):
+        if user.get("login") != CONTROL_OWNER or user.get("id") != CONTROL_OWNER_ID:
             continue
         if str(issue.get("title", "")).startswith(TITLE_PREFIX):
             return issue
@@ -154,57 +265,54 @@ def next_issue(gh_exe: str) -> dict[str, Any] | None:
 
 def process() -> int:
     if (root() / "PAUSE").exists():
-        log("paused")
+        log("paused by local PAUSE file")
         return 0
     lock = acquire_lock()
     if lock is None:
         return 0
     try:
-        gh_exe = find_gh(); verify_identity(gh_exe)
-        issue = next_issue(gh_exe)
+        gh = find_gh()
+        verify_identity(gh)
+        issue = next_issue(gh)
         if issue is None:
-            log("no pending job")
+            log("no pending v2 job")
             return 0
         number = int(issue["number"])
-        prior = comments(gh_exe, number)
-        trusted_prior = [
-            c for c in prior
-            if (c.get("user") or {}).get("login") == CONTROL_OWNER
-            and (c.get("user") or {}).get("id") == CONTROL_OWNER_ID
-        ]
-        if any(RESULT_MARKER in str(c.get("body", "")) for c in trusted_prior):
-            gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}", method="PATCH", body={"state": "closed"})
+        prior = trusted_comments(issue_comments(gh, number))
+        if any(RESULT_MARKER in str(c.get("body", "")) for c in prior):
+            gh_json(gh, f"repos/{CONTROL_REPO}/issues/{number}", method="PATCH", body={"state": "closed"})
             return 0
-        if any(CLAIM_MARKER in str(c.get("body", "")) for c in trusted_prior):
-            close_with(gh_exe, number, f"{RESULT_MARKER}\n### PNHD OSS Runner: BLOCKED\n\nExisting trusted claim found; job was not re-executed.")
+        if any(CLAIM_MARKER in str(c.get("body", "")) for c in prior):
+            close_control_issue(gh, number, "BLOCKED", "unknown", "existing trusted claim found; job was not replayed")
             return 2
-        job = parse_job(issue.get("body") or "")
+        pointer = parse_pointer(issue.get("body") or "")
+        job_id = pointer["job_id"]
         title = str(issue.get("title", ""))
-        bound_title = f"{TITLE_PREFIX} {job['job_id']}"
-        if title != bound_title and not title.startswith(bound_title + ":"):
-            raise RuntimeError("title/job_id binding failed")
-        gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}/comments", method="POST",
-           body={"body": f"{CLAIM_MARKER}\nRunner claimed `{job['job_id']}` at `{now()}`. A claimed job is never auto-replayed."})
-        raw = fetch_payload(gh_exe, job)
-        code, output, duration = execute(raw, job, number)
-        logs = root() / "job-logs"; logs.mkdir(parents=True, exist_ok=True)
-        local_log = logs / f"issue-{number}-{job['job_id']}.log"; local_log.write_text(output, encoding="utf-8", errors="replace")
-        status = "PASS" if code == 0 else "FAIL"
-        summary = public_summary(output)
-        body = (f"{RESULT_MARKER}\n### PNHD OSS Runner: {status}\n\n"
-                f"- job: `{job['job_id']}`\n- exit code: `{code}`\n- duration: `{duration:.1f}s`\n"
-                f"- payload ref: `{job['payload']['ref']}`\n- payload sha256: `{job['payload']['sha256']}`\n"
-                f"- full log: local only (`{local_log.name}`)\n\n```text\n{summary}\n```")
-        close_with(gh_exe, number, body)
-        log(f"issue #{number} {status}")
-        return 0 if code == 0 else 1
+        bound = f"{TITLE_PREFIX} {job_id}"
+        if title != bound and not title.startswith(bound + ":"):
+            raise RuntimeError("issue title/job_id binding failed")
+        fresh = gh_json(gh, f"repos/{CONTROL_REPO}/issues/{number}")
+        if not isinstance(fresh, dict) or fresh.get("state") != "open" or fresh.get("body") != issue.get("body") or fresh.get("title") != issue.get("title"):
+            raise RuntimeError("control issue changed during preflight")
+        gh_json(
+            gh,
+            f"repos/{CONTROL_REPO}/issues/{number}/comments",
+            method="POST",
+            body={"body": f"{CLAIM_MARKER}\nRunner v2 claimed `{job_id}` at `{now()}`. Claimed jobs are never auto-replayed."},
+        )
+        raw = fetch_manifest(gh, pointer)
+        manifest = parse_manifest(raw, pointer)
+        detail = apply_manifest(gh, manifest)
+        close_control_issue(gh, number, "PASS", job_id, detail)
+        log(f"issue #{number} PASS: {job_id}")
+        return 0
     except Exception as exc:
         log(f"BLOCKED: {exc}")
         try:
-            if 'number' in locals():
-                close_with(gh_exe, number, f"{RESULT_MARKER}\n### PNHD OSS Runner: BLOCKED\n\n```text\n{sanitize(str(exc))}\n```")
+            if "number" in locals():
+                close_control_issue(gh, number, "BLOCKED", locals().get("job_id", "unparsed"), str(exc))
         except Exception as report_exc:
-            log(f"could not report BLOCKED: {report_exc}")
+            log(f"could not report BLOCKED result: {report_exc}")
         return 2
     finally:
         lock.unlink(missing_ok=True)
@@ -212,5 +320,5 @@ def process() -> int:
 
 if __name__ == "__main__":
     if os.name != "nt":
-        raise SystemExit("Windows-only runner")
+        raise SystemExit("PNHD OSS Runner v2 is Windows-only")
     raise SystemExit(process())
