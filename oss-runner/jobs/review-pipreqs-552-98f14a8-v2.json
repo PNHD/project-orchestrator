@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-pipreqs-552-98f14a8-v2",
+  "kind": "github_review",
+  "target": {
+    "repo": "bndr/pipreqs",
+    "pr_number": 552,
+    "expected_head_sha": "98f14a884be87527f0f5cd9b6b3d90b1d5978fb7"
+  },
+  "review": {
+    "event": "REQUEST_CHANGES",
+    "body": "Re-reviewed current head `98f14a884be87527f0f5cd9b6b3d90b1d5978fb7`. SECURITY-N/A.\n\nThe earlier correctness/scope blockers are resolved: matching is normalized inside `get_import_local()`, output casing is preserved, the regression covers both `package[\"name\"]` and `package[\"exports\"]` case mismatches, the unrelated mapping/debug residue is gone, and the PR is now scoped to #312.\n\nOne concrete merge blocker remains in the newly added regression: its formatting violates this repository's default Flake8 checks. `tox.ini` runs `flake8 pipreqs tests` without ignoring E231, while the new test contains multiple missing-whitespace cases such as `self,mock_local`, `{\"name\":\"Flask\"...}`, and `assertEqual(len(result),1)`. Pycodestyle defines E231 as missing whitespace after `,`, `;`, or `:`. The current Actions runs are `action_required`, so lint has not executed on this head yet.\n\nPlease format the new test to satisfy Flake8 (spaces after commas/colons), then re-request review. I found no additional correctness blocker in the case-insensitive matching change itself."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review write was denied by the integration after exact-head and current-state verification."
+  }
+}
