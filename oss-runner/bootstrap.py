@@ -13,19 +13,28 @@ from pathlib import Path
 CONTROL_REPO = "PNHD/project-orchestrator"
 CONTROL_OWNER = "PNHD"
 CONTROL_OWNER_ID = 26757735
-CORE_COMMIT = "d2e4c2460baa82ee0a40c3bab31cdc91b75a84c6"
-RUNNER_SHA256 = "815c7d25670eeb45ae95dbb25496c243c2b240be6677868cc427d16bf22c5627"
-POLICY_SHA256 = "794e9672ea2253ca247735cb7f31d4a6d57d713c6b8fbdb0b2f5373ec1d58ff8"
-SMOKE_ISSUE = 4
+CORE_COMMIT = "036b2bbe7d568ef603bf8384c1b45e53e841b33a"
+RUNNER_SHA256 = "16e855d639e3c7ea42400a7f892a61468c49561204c5998e969a40f410b9679e"
+POLICY_SHA256 = "6551a317f70cb335bd499cc4174e81802c91076588e23bcc534610f115af0571"
+SMOKE_ISSUE = 6
 TASK_NAME = "PNHD OSS Runner"
 
 
 def run(cmd: list[str], *, stdin: str | None = None, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess[str]:
-    p = subprocess.run(cmd, input=stdin, text=True, encoding="utf-8", errors="replace",
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=False)
-    if check and p.returncode:
-        raise RuntimeError(f"command failed ({p.returncode}): {' '.join(cmd)}\n{p.stdout}")
-    return p
+    proc = subprocess.run(
+        cmd,
+        input=stdin,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+        check=False,
+    )
+    if check and proc.returncode:
+        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stdout}")
+    return proc
 
 
 def find_gh() -> str:
@@ -42,14 +51,14 @@ def gh_json(gh: str, endpoint: str) -> object:
     return json.loads(run([gh, "api", endpoint]).stdout)
 
 
-def fetch_file(gh: str, path: str, expected_sha: str) -> bytes:
+def fetch_file(gh: str, path: str, expected_sha256: str) -> bytes:
     data = gh_json(gh, f"repos/{CONTROL_REPO}/contents/{path}?ref={CORE_COMMIT}")
     if not isinstance(data, dict) or data.get("encoding") != "base64" or data.get("type") != "file":
         raise RuntimeError(f"unexpected GitHub response for {path}")
     raw = base64.b64decode(data.get("content", ""), validate=False)
     actual = hashlib.sha256(raw).hexdigest()
-    if actual != expected_sha:
-        raise RuntimeError(f"SHA-256 mismatch for {path}: expected {expected_sha}, got {actual}")
+    if actual != expected_sha256:
+        raise RuntimeError(f"SHA-256 mismatch for {path}: expected {expected_sha256}, got {actual}")
     return raw
 
 
@@ -60,15 +69,15 @@ def atomic_write(path: Path, raw: bytes) -> None:
     os.replace(tmp, path)
 
 
-def quote_cmd(path: Path | str) -> str:
+def q(path: Path | str) -> str:
     return '"' + str(path).replace('"', '""') + '"'
 
 
 def main() -> int:
-    print("=" * 74)
-    print("PNHD OSS RUNNER BOOTSTRAP v1")
-    print("=" * 74)
-    print("Installs one guarded per-minute Windows executor. No merge/release/deploy rights.")
+    print("=" * 76)
+    print("PNHD OSS RUNNER BOOTSTRAP v2 - DECLARATIVE GITHUB WRITER")
+    print("=" * 76)
+    print("No arbitrary job code, npm/test execution, merge, release, deploy, or force-push.")
     if os.name != "nt":
         raise RuntimeError("This bootstrap is Windows-only")
 
@@ -90,7 +99,8 @@ def main() -> int:
         raise RuntimeError("local policy verification failed")
     if hashlib.sha256((root / "runner.py").read_bytes()).hexdigest() != RUNNER_SHA256:
         raise RuntimeError("local runner verification failed")
-    print(f"[OK] immutable runner installed from {CORE_COMMIT[:12]}")
+    run([sys.executable, "-m", "py_compile", str(root / "policy.py"), str(root / "runner.py")])
+    print(f"[OK] immutable v2 core installed from {CORE_COMMIT[:12]}")
 
     python = Path(sys.executable).resolve()
     run_cmd = root / "run.cmd"
@@ -98,41 +108,46 @@ def main() -> int:
         "@echo off\n"
         "set PYTHONUTF8=1\n"
         "set PYTHONIOENCODING=utf-8\n"
-        f"{quote_cmd(python)} {quote_cmd(root / 'runner.py')} >> {quote_cmd(root / 'scheduled.log')} 2>&1\n",
+        f"{q(python)} {q(root / 'runner.py')} >> {q(root / 'scheduled.log')} 2>&1\n",
         encoding="utf-8",
     )
-    (root / "pause.cmd").write_text(f'@echo off\ntype nul > {quote_cmd(root / "PAUSE")}\necho PNHD OSS Runner paused.\n', encoding="utf-8")
-    (root / "resume.cmd").write_text(f'@echo off\ndel /q {quote_cmd(root / "PAUSE")} 2>nul\necho PNHD OSS Runner resumed.\n', encoding="utf-8")
+    (root / "pause.cmd").write_text(
+        f'@echo off\ntype nul > {q(root / "PAUSE")}\necho PNHD OSS Runner paused.\n', encoding="utf-8"
+    )
+    (root / "resume.cmd").write_text(
+        f'@echo off\ndel /q {q(root / "PAUSE")} 2>nul\necho PNHD OSS Runner resumed.\n', encoding="utf-8"
+    )
     (root / "uninstall.cmd").write_text(
-        f'@echo off\nschtasks /Delete /TN "{TASK_NAME}" /F\necho Scheduled task removed. Runner files/logs were kept at {root}.\n',
+        f'@echo off\nschtasks /Delete /TN "{TASK_NAME}" /F\necho Scheduled task removed. Runner files/logs remain at {root}.\n',
         encoding="utf-8",
     )
 
     action = f'cmd.exe /d /c ""{run_cmd}""'
-    create = run([
-        "schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "1",
-        "/TN", TASK_NAME, "/TR", action, "/RL", "LIMITED", "/IT",
-    ], timeout=60, check=False)
+    create = run(
+        [
+            "schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "1",
+            "/TN", TASK_NAME, "/TR", action, "/RL", "LIMITED", "/IT",
+        ],
+        timeout=60,
+        check=False,
+    )
     if create.returncode:
         raise RuntimeError(
-            "Scheduled Task creation failed. Open an Administrator CMD and run the same bootstrap command once.\n"
-            + create.stdout
+            "Scheduled Task creation failed. No runner will remain active.\n" + create.stdout
         )
     query = run(["schtasks", "/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"], timeout=60)
     if TASK_NAME.lower() not in query.stdout.lower():
         raise RuntimeError("Scheduled Task verification failed")
-    print("[OK] Scheduled Task installed: every 1 minute, LIMITED privileges, current logged-in user")
+    print("[OK] Scheduled Task: every 1 minute, LIMITED, only while this user is logged on")
 
-    # Run the exact installed runner synchronously once so smoke evidence does not
-    # depend on Task Scheduler timing.
-    smoke_before = gh_json(gh, f"repos/{CONTROL_REPO}/issues/{SMOKE_ISSUE}")
-    if not isinstance(smoke_before, dict):
+    smoke = gh_json(gh, f"repos/{CONTROL_REPO}/issues/{SMOKE_ISSUE}")
+    if not isinstance(smoke, dict):
         raise RuntimeError("smoke issue lookup failed")
-    if smoke_before.get("state") == "open":
-        print(f"[SMOKE] executing control issue #{SMOKE_ISSUE}")
-        smoke = run([str(python), str(root / "runner.py")], timeout=180, check=False)
-        if smoke.returncode != 0:
-            raise RuntimeError(f"runner smoke execution failed ({smoke.returncode})\n{smoke.stdout}")
+    if smoke.get("state") == "open":
+        print(f"[SMOKE] executing issue #{SMOKE_ISSUE} once synchronously")
+        execution = run([str(python), str(root / "runner.py")], timeout=120, check=False)
+        if execution.returncode != 0:
+            raise RuntimeError(f"runner smoke failed ({execution.returncode})\n{execution.stdout}")
 
     deadline = time.time() + 30
     while time.time() < deadline:
@@ -140,23 +155,23 @@ def main() -> int:
         comments = gh_json(gh, f"repos/{CONTROL_REPO}/issues/{SMOKE_ISSUE}/comments?per_page=100")
         bodies = [str(c.get("body", "")) for c in comments] if isinstance(comments, list) else []
         if isinstance(issue, dict) and issue.get("state") == "closed" and any(
-            "<!-- PNHD_OSS_RESULT_V1 -->" in b and "PNHD OSS Runner: PASS" in b for b in bodies
+            "<!-- PNHD_OSS_RESULT_V2 -->" in body and "PNHD OSS Runner v2: PASS" in body for body in bodies
         ):
-            print("[OK] smoke-v1 closed with verified PASS result")
+            print("[OK] declarative smoke-v2 closed with verified PASS")
             break
         time.sleep(2)
     else:
-        raise RuntimeError("smoke issue did not reach verified PASS")
+        raise RuntimeError("smoke-v2 did not reach verified PASS")
 
-    print("=" * 74)
-    print("PASS: PNHD OSS RUNNER INSTALLED")
+    print("=" * 76)
+    print("PASS: PNHD OSS RUNNER v2 INSTALLED")
     print(f"root: {root}")
     print(f"core commit: {CORE_COMMIT}")
     print(f"pause: {root / 'pause.cmd'}")
     print(f"resume: {root / 'resume.cmd'}")
     print(f"uninstall task: {root / 'uninstall.cmd'}")
-    print("Future guarded OSS jobs can now run without downloading per-job scripts.")
-    print("=" * 74)
+    print("Future guarded GitHub write jobs no longer require per-job downloads.")
+    print("=" * 76)
     return 0
 
 
@@ -166,8 +181,13 @@ if __name__ == "__main__":
     except Exception as exc:
         if os.name == "nt":
             try:
-                subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+                subprocess.run(
+                    ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
             except Exception:
                 pass
             try:
@@ -176,8 +196,8 @@ if __name__ == "__main__":
                 (fail_root / "PAUSE").write_text("bootstrap failed; runner paused\n", encoding="utf-8")
             except Exception:
                 pass
-        print("=" * 74)
-        print("BOOTSTRAP BLOCKED - scheduled task removed and runner paused")
+        print("=" * 76)
+        print("BOOTSTRAP BLOCKED - Scheduled Task removed and runner paused")
         print(str(exc))
-        print("=" * 74)
+        print("=" * 76)
         raise SystemExit(2)
