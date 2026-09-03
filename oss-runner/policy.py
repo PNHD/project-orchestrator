@@ -112,20 +112,40 @@ def parse_manifest(raw: bytes, pointer: dict[str, Any]) -> dict[str, Any]:
     if kind == "smoke":
         reject_unknown(manifest, {"schema", "job_id", "kind"}, "smoke manifest")
     elif kind == "github_review":
-        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "review"}, "github_review manifest")
+        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "review", "fallback"}, "github_review manifest")
+        _fallback(manifest)
         _review(manifest)
     elif kind == "github_comment":
-        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "comment"}, "github_comment manifest")
+        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "comment", "fallback"}, "github_comment manifest")
+        _fallback(manifest)
         _comment(manifest)
     elif kind == "github_pr_update":
-        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "update"}, "github_pr_update manifest")
+        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "update", "fallback"}, "github_pr_update manifest")
+        _fallback(manifest)
         _pr_update(manifest)
     elif kind == "github_pr_create":
-        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "pull_request"}, "github_pr_create manifest")
+        reject_unknown(manifest, {"schema", "job_id", "kind", "target", "pull_request", "fallback"}, "github_pr_create manifest")
+        _fallback(manifest)
         _pr_create(manifest)
     else:
         raise ValueError(f"unsupported declarative job kind: {kind!r}")
     return manifest
+
+
+def _fallback(manifest: dict[str, Any]) -> None:
+    fallback = manifest.get("fallback")
+    if not isinstance(fallback, dict):
+        raise ValueError("connector fallback evidence is required for external writes")
+    reject_unknown(fallback, {"reason", "status", "note"}, "fallback")
+    reason = fallback.get("reason")
+    if reason not in {"connector_write_denied", "connector_capability_missing"}:
+        raise ValueError("unsupported fallback reason")
+    status = fallback.get("status")
+    if reason == "connector_write_denied" and status != 403:
+        raise ValueError("connector_write_denied requires HTTP status 403")
+    if status is not None and (not isinstance(status, int) or isinstance(status, bool) or status < 100 or status > 599):
+        raise ValueError("invalid fallback HTTP status")
+    safe_text(fallback.get("note"), "fallback note", max_len=500)
 
 
 def _pr_target(target: Any) -> dict[str, Any]:
@@ -189,11 +209,12 @@ def _pr_create(manifest: dict[str, Any]) -> None:
     target = manifest.get("target")
     if not isinstance(target, dict):
         raise ValueError("target must be an object")
-    reject_unknown(target, {"repo", "base"}, "PR create target")
+    reject_unknown(target, {"repo", "base", "expected_base_sha"}, "PR create target")
     validate_repo(target.get("repo"))
     base = target.get("base")
     if not isinstance(base, str) or not BRANCH_RE.fullmatch(base):
         raise ValueError("invalid base branch")
+    validate_sha(target.get("expected_base_sha"), "expected_base_sha")
     pr = manifest.get("pull_request")
     if not isinstance(pr, dict):
         raise ValueError("pull_request must be an object")
