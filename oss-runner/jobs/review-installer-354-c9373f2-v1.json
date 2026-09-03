@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-installer-354-c9373f2-v1",
+  "kind": "github_review",
+  "target": {
+    "repo": "pypa/installer",
+    "pr_number": 354,
+    "expected_head_sha": "c9373f2e378f605c0e9559805b8a950eacdc2ba7"
+  },
+  "review": {
+    "event": "APPROVE",
+    "body": "Reviewed the current head `c9373f2` against the RECORD spec and Python's `csv` contract. Passing the full RECORD text through a `newline=\"\"` text stream is the right boundary: it lets `csv.reader` handle quoted embedded CR/LF itself and avoids `str.splitlines()` treating unrelated Unicode line-separator characters as record boundaries. The regression covers both failure classes (embedded newline and U+2028), both RECORD read sites use the same fix, and the current CI/pre-commit/docs checks are green. I found no correctness or compatibility blocker on this head."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "GitHub connector review write returned HTTP 403 Resource not accessible by integration."
+  }
+}
