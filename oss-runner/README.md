@@ -1,63 +1,60 @@
-# PNHD OSS Runner v1
+# PNHD OSS Runner v2
 
-A guarded Windows executor for PNHD's ongoing OSS maintenance workflow. It replaces the repeated `download one .py -> run it -> paste output` loop with a persistent local runner that polls a PNHD-owned GitHub issue queue.
+A guarded Windows **declarative GitHub writer** for PNHD's ongoing public OSS maintenance workflow. It removes the repeated `download one .py -> run it -> paste output` loop for GitHub writes that ChatGPT's GitHub integration cannot perform because an upstream repository returns `403`.
 
-## Execution model
+## Why v2 replaced v1 before installation
 
-1. ChatGPT/PM audits an OSS task and writes a bounded payload to `oss-runner/jobs/<job_id>.py`.
-2. The payload is committed to this repository and addressed by an exact 40-character commit SHA.
-3. A PNHD-authored issue whose title begins `[OSS-RUNNER] <job_id>` contains the exact ref, SHA-256, timeout, and declared permissions.
-4. The Windows runner polls once per minute, validates the job, claims it, executes it at most once, stores the full log locally, posts only explicit `PNHD_RESULT:` summary lines, and closes the issue.
+The first design could execute arbitrary Python and local build/test commands under the same Windows account that holds PNHD's `gh` credentials. That would make dependency/build code part of the credential trust boundary. v1 smoke/build jobs were cancelled before first execution.
 
-## Trust boundary
+v2 does **not execute job code** and does **not run npm, pip, tests, compilers, shells, or repository scripts** from the queue. The installed runner contains the only executable logic. Queue items are immutable JSON manifests describing a small fixed set of GitHub operations.
 
-This is intentionally a **trusted local executor, not a sandbox**. The primary trust root is all of the following together:
+## Supported operations
 
-- control repository is exactly `PNHD/project-orchestrator`;
-- issue author login is exactly `PNHD` and immutable GitHub user ID is `26757735`;
-- only owner-authored claim/result comments are trusted;
-- payload path is exactly `oss-runner/jobs/<job_id>.py`;
-- payload is fetched from an immutable commit SHA, never from a moving branch;
-- payload bytes must match the issue's SHA-256 before execution;
-- the local `gh` identity must also be `PNHD` / `26757735`.
+- smoke/identity verification;
+- submit a PR review on an exact current head;
+- add a comment to an open public issue/PR, optionally guarded by exact PR head;
+- update title/body/`maintainer_can_modify` on an exact current PR head;
+- create a PR from a PNHD-owned public fork branch after verifying its exact head and checking for duplicates.
 
-Because the control repository is public, untrusted users can read it and can comment on public issues. Their issue/comment markers are ignored. Do not put secrets, private source, credentials, cookies, OAuth tokens, or private-repository content into control issues or public payloads.
+It does not support merge, release, deployment, branch push, arbitrary command execution, workflow approval, secret/config mutation, DB migration, force-push, destructive Git, or private-repository targets.
+
+## Queue trust model
+
+1. Control repository is exactly `PNHD/project-orchestrator`.
+2. Queue issue author must be login `PNHD` and immutable GitHub user ID `26757735`.
+3. The issue only points to `oss-runner/jobs/<job_id>.json`.
+4. The manifest is fetched from an exact 40-character commit SHA, never a moving branch.
+5. Manifest bytes must match the SHA-256 embedded in the issue.
+6. Manifest schema rejects unknown fields and unsupported action kinds.
+7. GitHub PR writes are guarded by the exact current PR head SHA where applicable.
+8. Target repositories must be public and active.
+9. The local GitHub CLI identity must also be `PNHD` / `26757735`.
+
+The repository is public. Never place credentials, private source, cookies, OAuth tokens, private-repository data, or secrets in queue issues/manifests.
 
 ## At-most-once behavior
 
-Before execution, the runner posts `PNHD_OSS_CLAIM_V1`. If a later invocation sees an existing trusted claim without a completed result, it **does not replay the job**; it blocks/closes it instead. This deliberately prefers manual recovery over accidentally repeating a GitHub write after a crash.
+The runner posts a trusted `PNHD_OSS_CLAIM_V2` marker immediately before fetching/applying the immutable manifest. A later invocation that sees a trusted claim without a result does **not replay the job**. It closes the queue item as blocked instead. This prefers manual recovery over duplicated external writes after an uncertain crash/network result.
 
-## Hard safety boundaries
+## Local installation and controls
 
-The runner rejects common destructive or deployment actions, including force-push/history rewrite, PR merge, GitHub release/repository deletion, Wrangler deploy, Supabase DB/migration push, Terraform apply, kubectl apply/delete, Docker push, major cloud deploy commands, and `openclaw doctor --fix`.
+`bootstrap.py` installs immutable `policy.py` and `runner.py` bytes from a pinned commit after SHA-256 verification, compiles them, creates a Windows Scheduled Task named `PNHD OSS Runner`, then executes the declarative smoke issue synchronously.
 
-Job permissions are declared explicitly (`github_read`, review/comment/PR metadata writes, PR creation, fork push/branch creation, and local build/test). Static checks are defense in depth; they are not an OS sandbox.
+The task runs once per minute with `LIMITED` privileges under the current Windows user and `/IT`, so it runs only while that user is logged on. It does not store or copy GitHub tokens; it uses the existing authenticated `gh` session.
 
-The runner itself does **not** authorize merge, release, production deploy, secret/config changes, DB migrations, force-push, or destructive Git operations. Those remain separate Product Owner gates.
+Bootstrap also creates under `%LOCALAPPDATA%\PNHD\oss-runner`:
 
-## Output handling
+- `run.cmd` — fixed Scheduled Task entrypoint;
+- `pause.cmd` — local kill switch;
+- `resume.cmd` — resumes polling;
+- `uninstall.cmd` — deletes the Scheduled Task while preserving local files/logs.
 
-Full stdout/stderr is retained only under `%LOCALAPPDATA%\PNHD\oss-runner\job-logs`.
+If bootstrap fails, it deletes the Scheduled Task and creates `PAUSE` so no unattended runner remains active.
 
-Public GitHub result comments contain only lines deliberately prefixed by the payload with:
+## Builds/tests are a separate executor
 
-```text
-PNHD_RESULT:
-```
+Unattended build/test execution needs isolation from the credential-bearing Windows account. Do not reintroduce arbitrary Python or `local_build_test` into this runner. Use a separately verified sandboxed executor (for example an appropriately isolated Codex/OpenClaw/container/CI surface) before automating repository code execution.
 
-Before posting, the runner removes terminal escapes, invisible bidi/tag controls, Markdown fence injection, and common token/API-key patterns.
+## Manual gates that remain manual
 
-## Local controls
-
-Bootstrap creates:
-
-- `%LOCALAPPDATA%\PNHD\oss-runner\run.cmd`
-- `pause.cmd` — creates a local `PAUSE` kill switch
-- `resume.cmd` — removes the kill switch
-- `uninstall.cmd` — removes the Scheduled Task but keeps local logs/files
-
-The Scheduled Task is named `PNHD OSS Runner`, runs every minute with `LIMITED` privileges under the current Windows user, and uses the existing authenticated `gh` session.
-
-## Recovery rule
-
-Do not edit/reopen a claimed job to retry it. Create a new immutable payload commit and a new `[OSS-RUNNER]` issue with a new job ID. This preserves provenance and prevents accidental replay.
+Merge, release, production deployment, workflow/CI permission changes, credentials/secrets, DB migrations, force-push/history rewrite, destructive Git, and any expansion of the local runner's action surface require a separate Product Owner decision.
