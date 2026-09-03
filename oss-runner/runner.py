@@ -179,7 +179,9 @@ def process() -> int:
             close_with(gh_exe, number, f"{RESULT_MARKER}\n### PNHD OSS Runner: BLOCKED\n\nExisting trusted claim found; job was not re-executed.")
             return 2
         job = parse_job(issue.get("body") or "")
-        if not str(issue.get("title", "")).startswith(f"{TITLE_PREFIX} {job['job_id']}"):
+        title = str(issue.get("title", ""))
+        bound_title = f"{TITLE_PREFIX} {job['job_id']}"
+        if title != bound_title and not title.startswith(bound_title + ":"):
             raise RuntimeError("title/job_id binding failed")
         gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}/comments", method="POST",
            body={"body": f"{CLAIM_MARKER}\nRunner claimed `{job['job_id']}` at `{now()}`. A claimed job is never auto-replayed."})
