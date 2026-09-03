@@ -167,11 +167,16 @@ def process() -> int:
             return 0
         number = int(issue["number"])
         prior = comments(gh_exe, number)
-        if any(RESULT_MARKER in str(c.get("body", "")) for c in prior):
+        trusted_prior = [
+            c for c in prior
+            if (c.get("user") or {}).get("login") == CONTROL_OWNER
+            and (c.get("user") or {}).get("id") == CONTROL_OWNER_ID
+        ]
+        if any(RESULT_MARKER in str(c.get("body", "")) for c in trusted_prior):
             gh(gh_exe, f"repos/{CONTROL_REPO}/issues/{number}", method="PATCH", body={"state": "closed"})
             return 0
-        if any(CLAIM_MARKER in str(c.get("body", "")) for c in prior):
-            close_with(gh_exe, number, f"{RESULT_MARKER}\n### PNHD OSS Runner: BLOCKED\n\nExisting claim found; job was not re-executed.")
+        if any(CLAIM_MARKER in str(c.get("body", "")) for c in trusted_prior):
+            close_with(gh_exe, number, f"{RESULT_MARKER}\n### PNHD OSS Runner: BLOCKED\n\nExisting trusted claim found; job was not re-executed.")
             return 2
         job = parse_job(issue.get("body") or "")
         if not str(issue.get("title", "")).startswith(f"{TITLE_PREFIX} {job['job_id']}"):
