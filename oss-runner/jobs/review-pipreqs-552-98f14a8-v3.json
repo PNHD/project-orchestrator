@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-pipreqs-552-98f14a8-v3",
+  "kind": "github_review",
+  "target": {
+    "repo": "bndr/pipreqs",
+    "pr_number": 552,
+    "expected_head_sha": "98f14a884be87527f0f5cd9b6b3d90b1d5978fb7"
+  },
+  "review": {
+    "event": "REQUEST_CHANGES",
+    "body": "Re-reviewed current head `98f14a884be87527f0f5cd9b6b3d90b1d5978fb7`. SECURITY-N/A.\n\nThe scope and lookup placement from my previous review are now corrected, and dropping #243 is the right call. Two current-head blockers remain:\n\n1. The new regression does not actually isolate the `package[\"name\"]` comparison. Its Flask fixture has both `name=\"Flask\"` and `exports=[\"Flask\"]`, so that assertion still passes if the name-comparison arm is broken because the exports arm matches. Please make the name-path fixture's exports empty or unrelated, while keeping the separate PyYAML fixture for the exports path, so both branches are independently protected.\n2. The new test also contains definite Flake8 E231 violations (`self,mock_local`, dict entries like `\"name\":\"Flask\"`, and `assertEqual(len(result),1)`). This repository's `tox.ini` runs `flake8 pipreqs tests` without ignoring E231. The current GitHub Actions runs are `action_required`, so lint has not executed on this head yet.\n\nAfter those are fixed, the production change itself looks appropriately scoped for #312."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review write was denied by the integration after exact-head and current-state verification."
+  }
+}
