@@ -139,7 +139,10 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
             for item in existing
         ):
             return f"review {expected_state} already present on exact PR head {target['expected_head_sha'][:12]}"
-        body: dict[str, Any] = {"event": review["event"]}
+        # Recheck immediately before the external write and anchor the review to
+        # the immutable audited commit instead of GitHub's moving default head.
+        verify_pr(gh, target)
+        body: dict[str, Any] = {"event": review["event"], "commit_id": target["expected_head_sha"]}
         if review.get("body"):
             body["body"] = review["body"]
         result = gh_json(
@@ -173,6 +176,10 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
                 user = item.get("user") or {}
                 if user.get("login") == CONTROL_OWNER and user.get("id") == CONTROL_OWNER_ID and item.get("body") == comment_body:
                     return f"identical PNHD comment already present as id {item.get('id')}"
+        if is_pr:
+            pr = gh_json(gh, f"repos/{target['repo']}/pulls/{target['issue_number']}")
+            if not isinstance(pr, dict) or pr.get("state") != "open" or (pr.get("head") or {}).get("sha") != expected:
+                raise RuntimeError("comment target PR changed immediately before write")
         result = gh_json(
             gh,
             f"repos/{target['repo']}/issues/{target['issue_number']}/comments",
@@ -192,6 +199,7 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
         update = manifest["update"]
         if all(pr.get(key) == value for key, value in update.items()):
             return f"PR metadata already synchronized on exact head {target['expected_head_sha'][:12]}"
+        verify_pr(gh, target)
         result = gh_json(
             gh,
             f"repos/{target['repo']}/pulls/{target['pr_number']}",
@@ -209,6 +217,10 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
         target = manifest["target"]
         pr_data = manifest["pull_request"]
         verify_public_repo(gh, target["repo"])
+        base_ref = gh_json(gh, f"repos/{target['repo']}/git/ref/heads/{quote(target['base'], safe='/')}")
+        actual_base = ((base_ref or {}).get("object") or {}).get("sha") if isinstance(base_ref, dict) else None
+        if actual_base != target["expected_base_sha"]:
+            raise RuntimeError(f"base branch changed: expected {target['expected_base_sha']}, got {actual_base}")
         head_repo = verify_public_repo(gh, pr_data["head_repo"])
         if (head_repo.get("owner") or {}).get("login") != CONTROL_OWNER or (head_repo.get("owner") or {}).get("id") != CONTROL_OWNER_ID:
             raise RuntimeError("head repository is not owned by PNHD")
@@ -224,6 +236,13 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
             if (current.get("head") or {}).get("sha") == pr_data["expected_head_sha"]:
                 return f"matching PR #{current.get('number')} already exists on exact head {pr_data['expected_head_sha'][:12]}"
             raise RuntimeError(f"matching open PR exists on a different head: #{current.get('number')}")
+        # Recheck both immutable inputs immediately before PR creation.
+        base_ref = gh_json(gh, f"repos/{target['repo']}/git/ref/heads/{quote(target['base'], safe='/')}")
+        if ((base_ref or {}).get("object") or {}).get("sha") != target["expected_base_sha"]:
+            raise RuntimeError("base branch changed immediately before PR creation")
+        head_ref = gh_json(gh, f"repos/{pr_data['head_repo']}/git/ref/heads/{quote(pr_data['head_branch'], safe='/')}")
+        if ((head_ref or {}).get("object") or {}).get("sha") != pr_data["expected_head_sha"]:
+            raise RuntimeError("head branch changed immediately before PR creation")
         body = {
             "title": pr_data["title"],
             "head": f"{head_owner}:{pr_data['head_branch']}",
