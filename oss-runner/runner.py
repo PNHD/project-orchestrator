@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
+REVIEW_STATE = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
+
 from policy import (
     CLAIM_MARKER,
     CONTROL_OWNER,
@@ -122,22 +124,33 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
         return "identity and declarative control-plane smoke passed"
 
     if kind == "github_review":
-        pr = verify_pr(gh, manifest["target"])
+        target = manifest["target"]
+        pr = verify_pr(gh, target)
         if (pr.get("user") or {}).get("login") == CONTROL_OWNER:
             raise RuntimeError("runner refuses to review PNHD's own PR")
         review = manifest["review"]
+        expected_state = REVIEW_STATE[review["event"]]
+        existing = gh_json(gh, f"repos/{target['repo']}/pulls/{target['pr_number']}/reviews?per_page=100")
+        if isinstance(existing, list) and any(
+            (item.get("user") or {}).get("login") == CONTROL_OWNER
+            and (item.get("user") or {}).get("id") == CONTROL_OWNER_ID
+            and item.get("commit_id") == target["expected_head_sha"]
+            and item.get("state") == expected_state
+            for item in existing
+        ):
+            return f"review {expected_state} already present on exact PR head {target['expected_head_sha'][:12]}"
         body: dict[str, Any] = {"event": review["event"]}
         if review.get("body"):
             body["body"] = review["body"]
         result = gh_json(
             gh,
-            f"repos/{manifest['target']['repo']}/pulls/{manifest['target']['pr_number']}/reviews",
+            f"repos/{target['repo']}/pulls/{target['pr_number']}/reviews",
             method="POST",
             body=body,
         )
-        if not isinstance(result, dict) or result.get("state") != review["event"]:
-            raise RuntimeError("GitHub did not persist the requested review state")
-        return f"review {review['event']} persisted on exact PR head {manifest['target']['expected_head_sha'][:12]}"
+        if not isinstance(result, dict) or result.get("state") != expected_state:
+            raise RuntimeError(f"GitHub returned unexpected review state: {None if not isinstance(result, dict) else result.get('state')}")
+        return f"review {expected_state} persisted on exact PR head {target['expected_head_sha'][:12]}"
 
     if kind == "github_comment":
         target = manifest["target"]
@@ -146,15 +159,25 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
         if not isinstance(issue, dict) or issue.get("state") != "open":
             raise RuntimeError("comment target is not open")
         expected = target.get("expected_pr_head_sha")
+        is_pr = "pull_request" in issue
+        if is_pr and expected is None:
+            raise RuntimeError("PR comments require expected_pr_head_sha")
         if expected is not None:
             pr = gh_json(gh, f"repos/{target['repo']}/pulls/{target['issue_number']}")
             if not isinstance(pr, dict) or (pr.get("head") or {}).get("sha") != expected:
                 raise RuntimeError("comment target PR head changed")
+        comment_body = manifest["comment"]["body"]
+        existing = gh_json(gh, f"repos/{target['repo']}/issues/{target['issue_number']}/comments?per_page=100")
+        if isinstance(existing, list):
+            for item in existing:
+                user = item.get("user") or {}
+                if user.get("login") == CONTROL_OWNER and user.get("id") == CONTROL_OWNER_ID and item.get("body") == comment_body:
+                    return f"identical PNHD comment already present as id {item.get('id')}"
         result = gh_json(
             gh,
             f"repos/{target['repo']}/issues/{target['issue_number']}/comments",
             method="POST",
-            body={"body": manifest["comment"]["body"]},
+            body={"body": comment_body},
         )
         if not isinstance(result, dict) or not isinstance(result.get("id"), int):
             raise RuntimeError("GitHub did not return a persisted comment")
@@ -162,8 +185,13 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
 
     if kind == "github_pr_update":
         target = manifest["target"]
-        verify_pr(gh, target)
+        pr = verify_pr(gh, target)
+        author = pr.get("user") or {}
+        if author.get("login") != CONTROL_OWNER or author.get("id") != CONTROL_OWNER_ID:
+            raise RuntimeError("runner only updates PR metadata on PNHD-authored PRs")
         update = manifest["update"]
+        if all(pr.get(key) == value for key, value in update.items()):
+            return f"PR metadata already synchronized on exact head {target['expected_head_sha'][:12]}"
         result = gh_json(
             gh,
             f"repos/{target['repo']}/pulls/{target['pr_number']}",
@@ -192,7 +220,10 @@ def apply_manifest(gh: str, manifest: dict[str, Any]) -> str:
         query = urlencode({"state": "open", "head": f"{head_owner}:{pr_data['head_branch']}", "base": target["base"], "per_page": 100})
         existing = gh_json(gh, f"repos/{target['repo']}/pulls?{query}")
         if isinstance(existing, list) and existing:
-            raise RuntimeError(f"matching open PR already exists: #{existing[0].get('number')}")
+            current = existing[0]
+            if (current.get("head") or {}).get("sha") == pr_data["expected_head_sha"]:
+                return f"matching PR #{current.get('number')} already exists on exact head {pr_data['expected_head_sha'][:12]}"
+            raise RuntimeError(f"matching open PR exists on a different head: #{current.get('number')}")
         body = {
             "title": pr_data["title"],
             "head": f"{head_owner}:{pr_data['head_branch']}",
