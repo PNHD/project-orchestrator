@@ -40,11 +40,12 @@ The runner posts a trusted `PNHD_OSS_CLAIM_V2` marker immediately before fetchin
 
 `bootstrap.py` installs immutable `policy.py` and `runner.py` bytes from a pinned commit after SHA-256 verification, compiles them, creates a Windows Scheduled Task named `PNHD OSS Runner`, then executes the declarative smoke issue synchronously.
 
-The task runs once per minute with `LIMITED` privileges under the current Windows user and `/IT`, so it runs only while that user is logged on. It does not store or copy GitHub tokens; it uses the existing authenticated `gh` session.
+The task runs once per minute with `LIMITED` privileges under the current Windows user and `/IT`, so it runs only while that user is logged on. The task entrypoint is `wscript.exe //B //NoLogo run-hidden.vbs`; the VBScript launches `run.cmd` with window style `0`, keeping the poll fully hidden while preserving the existing `gh` authentication context and `scheduled.log` redirection. It does not store or copy GitHub tokens; it uses the existing authenticated `gh` session.
 
 Bootstrap also creates under `%LOCALAPPDATA%\PNHD\oss-runner`:
 
-- `run.cmd` — fixed Scheduled Task entrypoint;
+- `run-hidden.vbs` — windowless Scheduled Task entrypoint;
+- `run.cmd` — fixed runner command used by the hidden wrapper and for manual troubleshooting;
 - `pause.cmd` — local kill switch;
 - `resume.cmd` — resumes polling;
 - `uninstall.cmd` — deletes the Scheduled Task while preserving local files/logs.
