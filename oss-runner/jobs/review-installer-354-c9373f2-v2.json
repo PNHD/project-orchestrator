@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-installer-354-c9373f2-v2",
+  "kind": "github_review",
+  "target": {
+    "repo": "pypa/installer",
+    "pr_number": 354,
+    "expected_head_sha": "c9373f2e378f605c0e9559805b8a950eacdc2ba7"
+  },
+  "review": {
+    "event": "APPROVE",
+    "body": "Reviewed exact head `c9373f2e378f605c0e9559805b8a950eacdc2ba7`. SECURITY-N/A.\n\nThe change matches both authoritative contracts that matter here: the PyPA RECORD specification requires the CSV dialect to be readable by Python's default `csv.reader`, and Python's `csv` documentation says CSV text streams should use `newline=\"\"` so the csv module can handle embedded newlines itself. Replacing `str.splitlines()` with `io.StringIO(record_text, newline=\"\")` at both RECORD read sites preserves that boundary.\n\nThe regression covers both an embedded newline inside a quoted path and U+2028, which `str.splitlines()` treats as a separator even though the RECORD dialect does not. Current CI is green, there are no existing PNHD reviews or maintainer objections, and I found no remaining correctness, compatibility, readability, architecture, security, or performance blocker on this head. LGTM."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review write for pypa/installer #354 returned HTTP 403 Resource not accessible by integration in this maintenance workflow."
+  }
+}
