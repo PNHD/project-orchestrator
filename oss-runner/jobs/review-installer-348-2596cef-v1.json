@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-installer-348-2596cef-v1",
+  "kind": "github_review",
+  "target": {
+    "repo": "pypa/installer",
+    "pr_number": 348,
+    "expected_head_sha": "2596cefa89d311e4fc153ce1fee6dc6079291ffd"
+  },
+  "review": {
+    "event": "APPROVE",
+    "body": "Reviewed exact head `2596cefa89d311e4fc153ce1fee6dc6079291ffd`. SECURITY-N/A.\n\nThis matches the maintainer-approved direction in #140: when an executable is made runnable, the owner must retain read permission even under a restrictive umask. The patch preserves the existing execute-bit behavior and adds only `S_IRUSR`; its focused tests cover both the normal `0o022 -> 0o755` case and the reported restrictive `0o777 -> 0o511` case, including a real POSIX chmod check. The head CI run is green. Current `main` has advanced, but the intervening changes do not touch `src/installer/utils.py` or this behavior, and the PR remains mergeable. I found no correctness, readability, architecture, security, or performance blocker on this head. LGTM."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review write for pypa/installer #348 returned HTTP 403 Resource not accessible by integration."
+  }
+}
