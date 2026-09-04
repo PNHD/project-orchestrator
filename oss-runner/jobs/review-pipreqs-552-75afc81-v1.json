@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-pipreqs-552-75afc81-v1",
+  "kind": "github_review",
+  "target": {
+    "repo": "bndr/pipreqs",
+    "pr_number": 552,
+    "expected_head_sha": "75afc81f14e097011cf735d173ba944a3cbad206"
+  },
+  "review": {
+    "event": "APPROVE",
+    "body": "Re-reviewed current head `75afc81f14e097011cf735d173ba944a3cbad206`. SECURITY-N/A.\n\nBoth blockers from my prior review are resolved on this head: the Flask fixture now has an empty `exports` list, so the `package[\"name\"]` arm is independently exercised, while the separate PyYAML fixture still isolates the `package[\"exports\"]` arm; and the E231 spacing violations in the regression were fixed. The PR remains scoped to #312 and preserves the original package/output casing.\n\nThe current GitHub Actions are still `action_required` (approval-gated), not failed. The regression is now structured so each previously case-sensitive branch would fail on `master` and is satisfied by the case-insensitive comparison in this patch. I found no remaining correctness, test-design, architecture, readability, security, or performance blocker on this exact head. LGTM."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review writes for this external repository have already returned HTTP 403 in the current maintenance workflow; no connector capability change has been observed."
+  }
+}
