@@ -111,6 +111,18 @@ def main() -> int:
         f"{q(python)} {q(root / 'runner.py')} >> {q(root / 'scheduled.log')} 2>&1\n",
         encoding="utf-8",
     )
+
+    # Scheduled Task stays /IT so it can reuse the logged-in user's gh auth, but
+    # wscript.exe is windowless and launches run.cmd with window style 0. This
+    # keeps the one-minute poll completely hidden instead of flashing cmd.exe.
+    run_vbs = root / "run-hidden.vbs"
+    run_cmd_vbs = str(run_cmd).replace('"', '""')
+    run_vbs.write_text(
+        'Set shell = CreateObject("WScript.Shell")\n'
+        f'shell.Run """{run_cmd_vbs}""", 0, True\n',
+        encoding="utf-8",
+    )
+
     (root / "pause.cmd").write_text(
         f'@echo off\ntype nul > {q(root / "PAUSE")}\necho PNHD OSS Runner paused.\n', encoding="utf-8"
     )
@@ -122,7 +134,7 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    action = f'cmd.exe /d /c ""{run_cmd}""'
+    action = f'wscript.exe //B //NoLogo {q(run_vbs)}'
     create = run(
         [
             "schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "1",
@@ -138,7 +150,7 @@ def main() -> int:
     query = run(["schtasks", "/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"], timeout=60)
     if TASK_NAME.lower() not in query.stdout.lower():
         raise RuntimeError("Scheduled Task verification failed")
-    print("[OK] Scheduled Task: every 1 minute, LIMITED, only while this user is logged on")
+    print("[OK] Scheduled Task: every 1 minute, LIMITED, windowless, only while this user is logged on")
 
     smoke = gh_json(gh, f"repos/{CONTROL_REPO}/issues/{SMOKE_ISSUE}")
     if not isinstance(smoke, dict):
@@ -167,6 +179,7 @@ def main() -> int:
     print("PASS: PNHD OSS RUNNER v2 INSTALLED")
     print(f"root: {root}")
     print(f"core commit: {CORE_COMMIT}")
+    print(f"hidden task entrypoint: {run_vbs}")
     print(f"pause: {root / 'pause.cmd'}")
     print(f"resume: {root / 'resume.cmd'}")
     print(f"uninstall task: {root / 'uninstall.cmd'}")
