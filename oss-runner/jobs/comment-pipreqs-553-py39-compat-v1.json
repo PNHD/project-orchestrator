@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "job_id": "comment-pipreqs-553-py39-compat-v1",
+  "kind": "github_comment",
+  "target": {
+    "repo": "bndr/pipreqs",
+    "issue_number": 553
+  },
+  "comment": {
+    "body": "One compatibility constraint is worth locking down before implementing this: `importlib.metadata.packages_distributions()` is a natural fit for mapping top-level imports to distributions (including namespace packages), but the Python docs mark it **new in 3.10**, while pipreqs currently declares/supports Python 3.9 and its tox matrix includes `py39`. A direct stdlib switch would therefore regress a supported interpreter unless there is a 3.9-compatible fallback/backport strategy.\n\nFor a 3.9-compatible path, `importlib.metadata` already exposes distribution metadata and installed file lists. That can avoid parsing the `*.dist-info` directory name for `name`/`version`, but the docs also explicitly say the files API can return `None` when RECORD/SOURCES.txt is missing, so file-based top-level inference needs a defined fallback too.\n\nReferences:\n- Python 3.10 `packages_distributions()` (new in 3.10): https://docs.python.org/3.10/library/importlib.metadata.html#package-distributions\n- Python 3.9 `importlib.metadata` file-list behavior: https://docs.python.org/3.9/library/importlib.metadata.html#distribution-files\n- pipreqs currently requires `>=3.9,<3.14`: https://github.com/bndr/pipreqs/blob/48dbafd39003b9de177b8d314795e45797555850/pyproject.toml\n\nI would make the regression explicitly cover a modern-backend wheel with no `top_level.txt` on Python 3.9 as well as 3.10+, and add a namespace-package case if the implementation derives import names from installed files. SECURITY-N/A; this is an API/backward-compatibility concern."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub issue comment write was denied by the integration after current-state, overlap, compatibility, and source verification."
+  }
+}
