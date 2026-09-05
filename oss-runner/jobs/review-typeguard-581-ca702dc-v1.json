@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-typeguard-581-ca702dc-v1",
+  "kind": "github_review",
+  "target": {
+    "repo": "agronholm/typeguard",
+    "pr_number": 581,
+    "expected_head_sha": "ca702dcf5d7d13d97ba7bf18164b3a195ed72579"
+  },
+  "review": {
+    "event": "REQUEST_CHANGES",
+    "body": "One supported decorator path is still broken on this head. SECURITY-N/A.\n\n`owner` is only supplied when `@typechecked` decorates the entire class. When `@typechecked` is applied directly to an individual `__new__` method (which Typeguard documents as a supported function-decorator mode), the transformed annotation now references `__class__`, so the newly compiled code has a `__class__` free variable. But the direct-function path still calls `instrument(target)` with `owner=None`; closure reconstruction therefore falls through to `frame_locals.get(\"__class__\") or ForwardRef(\"__class__\")`, because `__class__` is also recorded in `names_used_in_annotations`.\n\nThat means the new function receives a closure cell containing `ForwardRef(\"__class__\")`, not the defining class. I independently reproduced the relevant CPython closure behavior with a reduced compile/FunctionType control: a method compiled with `return __class__` has `co_freevars == (\"__class__\",)`, and supplying a placeholder cell makes the method load that placeholder. Python's data-model docs likewise specify that `__class__` is a compiler-created closure for methods defined in a class body.\n\nPlease add a regression for method-level usage such as:\n\n```python\nclass Base:\n    @typechecked\n    def __new__(cls, other: \"Base\") -> \"Base\":\n        ...\n```\n\nincluding subclass construction / argument checking, and make that path bind the actual defining class rather than `ForwardRef(\"__class__\")`. The existing class-decorator and import-hook regressions can then continue covering the other two instrumentation modes."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review write for agronholm/typeguard #581 returned HTTP 403 Resource not accessible by integration."
+  }
+}
