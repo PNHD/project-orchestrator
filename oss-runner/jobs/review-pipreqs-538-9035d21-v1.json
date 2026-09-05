@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "job_id": "review-pipreqs-538-9035d21-v1",
+  "kind": "github_review",
+  "target": {
+    "repo": "bndr/pipreqs",
+    "pr_number": 538,
+    "expected_head_sha": "9035d219dc5f2b5dc770d774747cda81640a780f"
+  },
+  "review": {
+    "event": "APPROVE",
+    "body": "Reviewed exact head `9035d219dc5f2b5dc770d774747cda81640a780f`. SECURITY-N/A.\n\nThis is the correct import-to-distribution mapping for #331: the upstream `mhammond/pywin32` project itself builds the distribution as `pywin32` and contains the `win32gui` module/API, so mapping `win32gui` to `pywin32` fixes the generated requirement rather than inventing a standalone `win32gui` package. The focused regression extends the existing mapping test and preserves the surrounding mapping behavior. There are no GitHub Actions runs on this head, so I am not claiming upstream CI evidence; an independent local test/lint pass is recorded on the PR. I found no correctness, test-design, architecture, readability, security, or performance blocker on this exact head. LGTM."
+  },
+  "fallback": {
+    "reason": "connector_write_denied",
+    "status": 403,
+    "note": "Direct GitHub review write for bndr/pipreqs #538 returned HTTP 403 Resource not accessible by integration."
+  }
+}
